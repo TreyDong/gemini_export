@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>Gemini Export Settings</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+  <div class="app">
+    <header>
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" />
+          <path d="M12 6v6l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        <span>Gemini Export</span>
+      </div>
+    </header>
+
+    <main>
+      <div id="status"></div>
+
+      <section class="card">
+        <h2>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+            <polyline points="22,6 12,13 2,6" />
+          </svg>
+          Notion Configuration
+        </h2>
+        <p class="hint">Connect to your Notion workspace to save chat exports.</p>
+
+        <div class="form-group">
+          <label for="notionKey">Integration Token</label>
+          <input type="password" id="notionKey" placeholder="secret_xxxxx...">
+        </div>
+
+        <div class="form-group">
+          <label for="dbId">Database ID</label>
+          <input type="text" id="dbId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+        </div>
+
+        <button id="saveSettings" class="btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+            <polyline points="17 21 17 13 7 13 7 21" />
+            <polyline points="7 3 7 8 15 8" />
+          </svg>
+          Save Settings
+        </button>
+      </section>
+
+      <section class="card info-card">
+        <h3>How to use</h3>
+        <ol>
+          <li>Visit <a href="https://gemini.google.com" target="_blank">gemini.google.com</a></li>
+          <li>Look for the <strong>Export</strong> button in the bottom-right corner</li>
+          <li>Choose your export format</li>
+        </ol>
+      </section>
+    </main>
+
+    <footer>
+      <span>v1.0</span>
+    </footer>
+  </div>
+  <script src="popup.js"></script>
+</body>
+
+</html>
