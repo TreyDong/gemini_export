@@ -163,27 +163,41 @@ async function extractChatDataAsync(config) {
 
                 if (modelThoughts) {
                     // Check if content (.markdown) is already visible
-                    // Note: .markdown inside thinking is only present if expanded
-                    let visibleMarkdown = modelThoughts.querySelector('.markdown');
-                    let wasExpanded = !!visibleMarkdown;
+                    let visibleMarkdowns = modelThoughts.querySelectorAll('.markdown');
+                    let wasExpanded = visibleMarkdowns.length > 0;
 
-                    if (!visibleMarkdown) {
+                    if (!wasExpanded) {
                         // Not visible, look for expand button
                         const expandBtn = modelThoughts.querySelector('[data-test-id="thoughts-header-button"], .thoughts-header-button, button[aria-expanded="false"]');
                         if (expandBtn) {
                             expandBtn.click();
-                            // Wait for the .markdown element to appear in DOM
-                            const found = await waitForElement(modelThoughts, '.markdown', 1500);
+                            // Wait for at least one .markdown element to appear per subagent findings
+                            const found = await waitForElement(modelThoughts, '.markdown', 2000);
                             if (found) {
-                                visibleMarkdown = found;
+                                // Re-query for ALL markdown elements as there are multiple
+                                visibleMarkdowns = modelThoughts.querySelectorAll('.markdown');
                                 if (!wasExpanded) expandedElements.push(expandBtn); // Track to re-collapse
                             }
                         }
                     }
 
-                    if (visibleMarkdown) {
-                        thinking = domToMarkdownRobust(visibleMarkdown).trim();
+                    if (visibleMarkdowns.length > 0) {
+                        // Join all thinking parts (Gemini splits stages into separate markdowns)
+                        const parts = Array.from(visibleMarkdowns).map(md => domToMarkdownRobust(md).trim());
+                        thinking = parts.join('\n\n');
+
                         // Cleanup repeated headers
+                        thinking = thinking.replace(/^(Show thinking|Hide thinking|Thinking:?)/i, '').trim();
+                    } else {
+                        // Fallback: If no .markdown found, try .thoughts-content or full text
+                        // This handles cases where structure might differ
+                        const contentDiv = modelThoughts.querySelector('.thoughts-content');
+                        if (contentDiv) {
+                            thinking = domToMarkdownRobust(contentDiv).trim();
+                        } else {
+                            // Last resort, might include "Show thinking" text but better than nothing
+                            thinking = domToMarkdownRobust(modelThoughts).trim();
+                        }
                         thinking = thinking.replace(/^(Show thinking|Hide thinking|Thinking:?)/i, '').trim();
                     }
                 }
