@@ -284,47 +284,90 @@ function markdownToNotionBlocks(content) {
     let inCodeBlock = false;
     let codeBlockLang = '';
     let codeBlockContent = [];
+
+    // Buffers for merging consecutive lines
+    let inQuoteBlock = false;
+    let quoteBlockContent = [];
+
     let listItems = [];
     let listType = null; // 'bulleted' or 'numbered'
 
     const flushList = () => {
         if (listItems.length > 0) {
             listItems.forEach(item => {
+                const itemRichText = parseInlineMarkdown(item);
+                const chunks = splitRichText(itemRichText);
+
                 blocks.push({
                     object: 'block',
                     type: listType === 'numbered' ? 'numbered_list_item' : 'bulleted_list_item',
                     [listType === 'numbered' ? 'numbered_list_item' : 'bulleted_list_item']: {
-                        rich_text: parseInlineMarkdown(item)
+                        rich_text: chunks[0] // First chunk
                     }
                 });
+
+                // Spill over extra text to paragraphs
+                for (let k = 1; k < chunks.length; k++) {
+                    blocks.push({
+                        object: 'block',
+                        type: 'paragraph',
+                        paragraph: { rich_text: chunks[k] }
+                    });
+                }
             });
             listItems = [];
             listType = null;
         }
     };
 
+    const flushQuote = () => {
+        if (inQuoteBlock && quoteBlockContent.length > 0) {
+            // Join lines with newline
+            const fullQuoteText = quoteBlockContent.join('\n');
+            const richText = parseInlineMarkdown(fullQuoteText);
+            const chunks = splitRichText(richText);
+
+            chunks.forEach(chunk => {
+                blocks.push({
+                    object: 'block',
+                    type: 'quote',
+                    quote: {
+                        rich_text: chunk
+                    }
+                });
+            });
+
+            quoteBlockContent = [];
+            inQuoteBlock = false;
+        }
+    };
+
+    const flushAll = () => {
+        flushList();
+        flushQuote();
+    };
+
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
 
-        // Code block start/end
+        // --- Code Blocks ---
         if (line.startsWith('```')) {
+            flushAll();
             if (!inCodeBlock) {
-                flushList();
                 inCodeBlock = true;
                 codeBlockLang = line.slice(3).trim() || 'plain text';
                 codeBlockContent = [];
             } else {
                 // End code block
                 const codeText = codeBlockContent.join('\n');
-                // Split code into chunks if too long
                 const codeChunks = codeText.match(/.{1,2000}/gs) || [''];
-                codeChunks.forEach((chunk, idx) => {
+                codeChunks.forEach((chunk) => {
                     blocks.push({
                         object: 'block',
                         type: 'code',
                         code: {
                             rich_text: [{ type: 'text', text: { content: chunk } }],
-                            language: codeBlockLang.toLowerCase()
+                            language: codeBlockLang.toLowerCase().split(' ')[0] || 'plain'
                         }
                     });
                 });
@@ -340,10 +383,29 @@ function markdownToNotionBlocks(content) {
             continue;
         }
 
-        // Headers
+        // --- Quotes ---
+        const quoteMatch = line.match(/^>\s?(.*)$/);
+        if (quoteMatch) {
+            flushList(); // Quotes break lists
+            if (!inQuoteBlock) {
+                inQuoteBlock = true;
+                quoteBlockContent = [];
+            }
+            quoteBlockContent.push(quoteMatch[1]);
+            continue;
+        } else {
+            // Check if we should close the quote
+            if (inQuoteBlock) {
+                // Formatting choice: Standard markdown breaks quote on empty line or non-quote line.
+                // We'll flush here.
+                flushQuote();
+            }
+        }
+
+        // --- Headers ---
         const headerMatch = line.match(/^(#{1,3})\s+(.+)$/);
         if (headerMatch) {
-            flushList();
+            flushAll();
             const level = headerMatch[1].length;
             const headerType = level === 1 ? 'heading_1' : level === 2 ? 'heading_2' : 'heading_3';
             blocks.push({
@@ -356,9 +418,10 @@ function markdownToNotionBlocks(content) {
             continue;
         }
 
-        // Bulleted list
+        // --- Lists ---
         const bulletMatch = line.match(/^[\s]*[-*]\s+(.+)$/);
         if (bulletMatch) {
+            flushQuote(); // Ensure quote is closed
             if (listType !== 'bulleted') {
                 flushList();
                 listType = 'bulleted';
@@ -367,9 +430,9 @@ function markdownToNotionBlocks(content) {
             continue;
         }
 
-        // Numbered list
         const numberedMatch = line.match(/^[\s]*\d+\.\s+(.+)$/);
         if (numberedMatch) {
+            flushQuote();
             if (listType !== 'numbered') {
                 flushList();
                 listType = 'numbered';
@@ -378,28 +441,13 @@ function markdownToNotionBlocks(content) {
             continue;
         }
 
-        // Quote
-        const quoteMatch = line.match(/^>\s*(.*)$/);
-        if (quoteMatch) {
-            flushList();
-            blocks.push({
-                object: 'block',
-                type: 'quote',
-                quote: {
-                    rich_text: parseInlineMarkdown(quoteMatch[1] || '')
-                }
-            });
+        // --- Paragraphs ---
+        flushAll();
+
+        if (line.trim() === '') {
             continue;
         }
 
-        // Empty line or regular paragraph
-        flushList();
-
-        if (line.trim() === '') {
-            continue; // Skip empty lines
-        }
-
-        // Regular paragraph with inline formatting
         const richText = parseInlineMarkdown(line);
         const chunks = splitRichText(richText);
         chunks.forEach(chunk => {
@@ -413,8 +461,7 @@ function markdownToNotionBlocks(content) {
         });
     }
 
-    // Flush any remaining list
-    flushList();
+    flushAll(); // Final flush
 
     // Handle unclosed code block
     if (inCodeBlock && codeBlockContent.length > 0) {
@@ -424,7 +471,7 @@ function markdownToNotionBlocks(content) {
             type: 'code',
             code: {
                 rich_text: [{ type: 'text', text: { content: codeText.slice(0, 2000) } }],
-                language: codeBlockLang.toLowerCase() || 'plain text'
+                language: codeBlockLang.toLowerCase().split(' ')[0] || 'plain'
             }
         });
     }
