@@ -6,7 +6,8 @@
   "permissions": [
     "activeTab",
     "storage",
-    "scripting"
+    "scripting",
+    "downloads"
   ],
   "host_permissions": [
     "https://gemini.google.com/*",
@@ -25,13 +26,18 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://gemini.google.com/*"],
-      "js": ["content.js"]
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "lib/html2pdf.bundle.min.js",
+        "content.js"
+      ]
     }
   ],
   "icons": {
-      "16": "images/icon16.png",
-      "48": "images/icon48.png",
-      "128": "images/icon128.png"
+    "16": "images/icon16.png",
+    "48": "images/icon48.png",
+    "128": "images/icon128.png"
   }
 }

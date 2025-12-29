@@ -429,7 +429,7 @@ function performExport(action) {
     });
 }
 
-function downloadMarkdown(data) {
+async function downloadMarkdown(data) {
     const dateObj = new Date(data.date);
     const dateStr = dateObj.toLocaleDateString() + ' ' + dateObj.toLocaleTimeString();
 
@@ -450,16 +450,65 @@ function downloadMarkdown(data) {
         md += `---\n\n`;
     });
 
-    const blob = new Blob([md], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const safeTitle = data.title.replace(/[^a-z0-9\u4e00-\u9fa5]/gi, '_').substring(0, 50);
-    a.download = `Gemini-${safeTitle}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // 保留中文，只移除文件系统非法字符
+    const safeTitle = data.title
+        .replace(/[\/\\:*?"<>|]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .substring(0, 100);
+    const filename = `Gemini-${safeTitle}.md`;
+
+    // 方法1: 使用现代 File System Access API（最可靠）
+    if ('showSaveFilePicker' in window) {
+        try {
+            const handle = await window.showSaveFilePicker({
+                suggestedName: filename,
+                types: [{
+                    description: 'Markdown files',
+                    accept: { 'text/markdown': ['.md'] }
+                }]
+            });
+            const writable = await handle.createWritable();
+            await writable.write(md);
+            await writable.close();
+            console.log('✅ File saved via File System Access API');
+            return;
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                console.log('User cancelled save dialog');
+                return;
+            }
+            console.warn('File System Access API failed, trying fallback:', e);
+        }
+    }
+
+    // 方法2: 回退到传统anchor下载，使用File对象
+    try {
+        const file = new File([md], filename, { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(file);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+
+        // 使用requestAnimationFrame确保DOM更新
+        requestAnimationFrame(() => {
+            a.click();
+            console.log('✅ Download triggered via File object');
+
+            // 延迟清理
+            setTimeout(() => {
+                if (document.body.contains(a)) {
+                    document.body.removeChild(a);
+                }
+                URL.revokeObjectURL(url);
+            }, 10000);
+        });
+    } catch (e) {
+        console.error('File download failed:', e);
+        showModal('Download Failed', 'Could not download the file. Error: ' + e.message, null, null);
+    }
 }
 
 function printToPDF(data) {
