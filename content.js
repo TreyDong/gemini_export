@@ -50,16 +50,9 @@ function domToMarkdownRobust(node) {
             inner += domToMarkdownRobust(child);
         }
 
-        // Trim newlines from inner content for block elements to avoid excessive spacing
-        // but be careful not to merge words.
-
         switch (tagName) {
             case 'p': return `\n${inner.trim()}\n\n`;
-            case 'div':
-                // Divs are tricky. If they contain block elements, they are wrappers.
-                // If they act as paragraphs, they need newlines.
-                // A safe bet is to treat them as neutral but allow blocks inside to dictate spacing.
-                return `${inner}`;
+            case 'div': return `${inner}`;
             case 'br': return '  \n';
             case 'strong':
             case 'b': return `**${inner}**`;
@@ -80,19 +73,15 @@ function domToMarkdownRobust(node) {
             case 'code':
                 if (node.closest('pre')) return inner;
                 return `\`${inner}\``;
-            case 'tr':
-                // Fallback if tableToMarkdown didn't catch it (nested tables?)
-                return `| ${inner.replace(/\n\s*/g, '')} |\n`;
+            case 'tr': return `| ${inner.replace(/\n\s*/g, '')} |\n`;
             case 'td':
-            case 'th':
-                return `${inner} | `;
+            case 'th': return `${inner} | `;
             default: return inner;
         }
     }
     return '';
 }
 
-// Special Table Handler
 function tableToMarkdown(table) {
     let md = '\n';
     const rows = Array.from(table.querySelectorAll('tr'));
@@ -113,15 +102,13 @@ function tableToMarkdown(table) {
     return md + '\n';
 }
 
-// Helper function to wait for DOM updates
-function waitForElement(parent, selector, timeout = 500) {
+function waitForElement(parent, selector, timeout = 1000) {
     return new Promise((resolve) => {
         const existing = parent.querySelector(selector);
         if (existing) {
             resolve(existing);
             return;
         }
-
         const observer = new MutationObserver(() => {
             const el = parent.querySelector(selector);
             if (el) {
@@ -129,9 +116,7 @@ function waitForElement(parent, selector, timeout = 500) {
                 resolve(el);
             }
         });
-
         observer.observe(parent, { childList: true, subtree: true });
-
         setTimeout(() => {
             observer.disconnect();
             resolve(parent.querySelector(selector));
@@ -156,9 +141,9 @@ async function extractChatDataAsync(config) {
     const messages = [];
     const includeThinking = config && config.includeThinking;
     const allElements = document.querySelectorAll('user-query, model-response');
-
     const expandedElements = [];
 
+    // Iterate through all elements
     for (const el of allElements) {
         let role = '';
         let content = '';
@@ -173,54 +158,50 @@ async function extractChatDataAsync(config) {
 
             // --- 1. Extract Thinking ---
             if (includeThinking) {
+                // Find potential thinking container
                 const modelThoughts = el.querySelector('model-thoughts, [data-test-id="model-thoughts"], .model-thoughts, thought-view, .thoughts-container');
 
                 if (modelThoughts) {
-                    // Try to finding existing content (already expanded)
-                    let thoughtsContent = modelThoughts.querySelector('[data-test-id="thoughts-content"], .thoughts-content');
-                    const wasExpanded = !!thoughtsContent;
+                    // Check if content (.markdown) is already visible
+                    // Note: .markdown inside thinking is only present if expanded
+                    let visibleMarkdown = modelThoughts.querySelector('.markdown');
+                    let wasExpanded = !!visibleMarkdown;
 
-                    // If not expanded, click to expand
-                    if (!thoughtsContent) {
+                    if (!visibleMarkdown) {
+                        // Not visible, look for expand button
                         const expandBtn = modelThoughts.querySelector('[data-test-id="thoughts-header-button"], .thoughts-header-button, button[aria-expanded="false"]');
                         if (expandBtn) {
                             expandBtn.click();
-                            thoughtsContent = await waitForElement(modelThoughts, '[data-test-id="thoughts-content"], .thoughts-content', 500);
-                            if (thoughtsContent && !wasExpanded) {
-                                expandedElements.push(expandBtn);
+                            // Wait for the .markdown element to appear in DOM
+                            const found = await waitForElement(modelThoughts, '.markdown', 1500);
+                            if (found) {
+                                visibleMarkdown = found;
+                                if (!wasExpanded) expandedElements.push(expandBtn); // Track to re-collapse
                             }
                         }
                     }
 
-                    if (thoughtsContent) {
-                        // Use markdown extraction for thinking too
-                        const contentContainer = thoughtsContent.querySelector('.message-content-container') || thoughtsContent;
-                        thinking = domToMarkdownRobust(contentContainer).trim();
+                    if (visibleMarkdown) {
+                        thinking = domToMarkdownRobust(visibleMarkdown).trim();
+                        // Cleanup repeated headers
                         thinking = thinking.replace(/^(Show thinking|Hide thinking|Thinking:?)/i, '').trim();
                     }
                 }
             }
 
             // --- 2. Extract Main Content ---
-            // CRITICAL FIX: Distinguish between Thinking MD and Content MD.
-            // Select ALL markdown elements in this response.
             const allMarkdowns = Array.from(el.querySelectorAll('.markdown'));
-
-            // Filter: Keep only those that are NOT inside a thinking container.
+            // Filter out markdowns inside model-thoughts
             const contentMarkdowns = allMarkdowns.filter(mdNode => {
                 return !mdNode.closest('model-thoughts, [data-test-id="model-thoughts"], thought-view, .thoughts-container, .model-thoughts');
             });
 
             if (contentMarkdowns.length > 0) {
-                // Join them if multiple (rare, but possible)
                 content = contentMarkdowns.map(md => domToMarkdownRobust(md)).join('\n\n');
             } else {
-                // Fallback: If no clean markdown found, try to clone the whole element and strip thoughts
-                // This is a last resort for weird structures
+                // Fallback attempt (less likely to be needed now)
                 const clone = el.cloneNode(true);
-                const thoughtsInClone = clone.querySelectorAll(
-                    'model-thoughts, .model-thoughts, [data-test-id="model-thoughts"], thought-view, .thoughts-container'
-                );
+                const thoughtsInClone = clone.querySelectorAll('model-thoughts, .model-thoughts, [data-test-id="model-thoughts"], thought-view, .thoughts-container');
                 thoughtsInClone.forEach(t => t.remove());
                 content = domToMarkdownRobust(clone);
             }
@@ -233,15 +214,9 @@ async function extractChatDataAsync(config) {
         }
     }
 
-    // Collapse back
+    // Collapse elements that we expanded
     for (const btn of expandedElements) {
-        // Find the button again (DOM might have shifted slightly, but reference should hold)
-        // Or simply re-query within the element if needed, but direct click usually works on element reference.
-        try {
-            if (document.body.contains(btn)) {
-                btn.click();
-            }
-        } catch (e) { }
+        try { if (document.body.contains(btn)) btn.click(); } catch (e) { }
     }
 
     return {
@@ -252,87 +227,68 @@ async function extractChatDataAsync(config) {
     };
 }
 
-// Ensure UI injection (kept same as before)
+// --- UI Logic ---
+
+function showModal(title, message, confirmText, confirmUrl) {
+    const modal = document.getElementById('gemini-export-modal');
+    if (!modal) return;
+
+    document.getElementById('gemini-export-title').innerText = title;
+    document.getElementById('gemini-export-message').innerText = message;
+
+    const confirmBtn = document.getElementById('gemini-export-confirm');
+    const closeBtn = document.getElementById('gemini-export-close');
+
+    if (confirmText && confirmUrl) {
+        confirmBtn.style.display = 'inline-block';
+        confirmBtn.innerText = confirmText;
+        confirmBtn.onclick = () => window.open(confirmUrl, '_blank');
+    } else {
+        confirmBtn.style.display = 'none';
+    }
+
+    closeBtn.onclick = () => {
+        modal.style.display = 'none';
+    };
+
+    modal.style.display = 'flex';
+}
+
 function injectExportUI() {
     if (document.getElementById('gemini-export-fab')) return;
 
+    // 1. Inject Style
     const css = document.createElement('style');
     css.textContent = `
         #gemini-export-fab {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            z-index: 99999;
-            font-family: 'Google Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            position: fixed; bottom: 24px; right: 24px; z-index: 99999;
+            font-family: 'Google Sans', sans-serif;
         }
         #gemini-export-fab .fab-btn {
-            background: linear-gradient(135deg, #4285f4, #1a73e8);
-            color: white;
-            border: none;
-            border-radius: 28px;
-            padding: 12px 24px;
-            font-size: 14px;
-            font-weight: 500;
-            box-shadow: 0 4px 12px rgba(26,115,232,0.4);
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            background: linear-gradient(135deg, #4285f4, #1a73e8); color: white; border: none;
+            border-radius: 28px; padding: 12px 24px; font-size: 14px; font-weight: 500;
+            box-shadow: 0 4px 12px rgba(26,115,232,0.4); cursor: pointer; display: flex; align-items: center; gap: 8px;
             transition: all 0.2s ease;
         }
-        #gemini-export-fab .fab-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(26,115,232,0.5);
-        }
+        #gemini-export-fab .fab-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(26,115,232,0.5); }
         #gemini-export-fab .menu {
-            position: absolute;
-            bottom: calc(100% + 12px);
-            right: 0;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
-            padding: 8px 0;
-            min-width: 200px;
-            display: none;
-            opacity: 0;
-            transform: translateY(10px);
-            transition: all 0.2s ease;
+            position: absolute; bottom: calc(100% + 12px); right: 0; background: white;
+            border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); padding: 8px 0; min-width: 200px;
+            display: none; opacity: 0; transform: translateY(10px); transition: all 0.2s ease;
         }
-        #gemini-export-fab .menu.visible {
-            display: block;
-            opacity: 1;
-            transform: translateY(0);
-        }
+        #gemini-export-fab .menu.visible { display: block; opacity: 1; transform: translateY(0); }
         #gemini-export-fab .menu-item {
-            padding: 12px 16px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            color: #333;
-            font-size: 14px;
-            transition: background 0.15s;
+            padding: 12px 16px; cursor: pointer; display: flex; align-items: center; gap: 12px;
+            color: #333; font-size: 14px; transition: background 0.15s;
         }
-        #gemini-export-fab .menu-item:hover {
-            background: #f1f5f9;
-        }
-        #gemini-export-fab .menu-item.checkbox-item {
-            background: #f8fafc;
-            border-bottom: 1px solid #e2e8f0;
-        }
-        #gemini-export-fab .menu-item input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-            accent-color: #4285f4;
-        }
-        #gemini-export-fab .menu-item svg {
-            width: 20px;
-            height: 20px;
-            color: #64748b;
-        }
+        #gemini-export-fab .menu-item:hover { background: #f1f5f9; }
+        #gemini-export-fab .menu-item.checkbox-item { background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
+        #gemini-export-fab .menu-item input[type="checkbox"] { width: 18px; height: 18px; accent-color: #4285f4; }
+        #gemini-export-fab .menu-item svg { width: 20px; height: 20px; color: #64748b; }
     `;
     document.head.appendChild(css);
 
+    // 2. Inject FAB
     const fab = document.createElement('div');
     fab.id = 'gemini-export-fab';
     fab.innerHTML = `
@@ -365,6 +321,23 @@ function injectExportUI() {
     `;
     document.body.appendChild(fab);
 
+    // 3. Inject Modal
+    const modalDiv = document.createElement('div');
+    modalDiv.innerHTML = `
+        <div id="gemini-export-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:100000; justify-content:center; align-items:center;">
+            <div style="background:white; padding:24px; border-radius:12px; max-width:400px; width:90%; box-shadow:0 10px 25px rgba(0,0,0,0.2); text-align:center; font-family: 'Google Sans', sans-serif;">
+                <h3 id="gemini-export-title" style="margin-top:0; margin-bottom:12px; color:#1f1f1f; font-size:18px;"></h3>
+                <p id="gemini-export-message" style="margin:0 0 20px 0; color:#555; font-size:14px; line-height:1.5;"></p>
+                <div style="display:flex; justify-content:center; gap:12px;">
+                    <button id="gemini-export-close" style="padding:8px 20px; border:1px solid #dadce0; background:white; color:#3c4043; border-radius:6px; cursor:pointer; font-weight:500;">Close</button>
+                    <button id="gemini-export-confirm" style="padding:8px 20px; border:none; background:#1a73e8; color:white; border-radius:6px; cursor:pointer; font-weight:500;">Action</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modalDiv);
+
+    // Event Listeners
     const fabBtn = fab.querySelector('.fab-btn');
     const menu = fab.querySelector('.menu');
     const thinkingToggle = fab.querySelector('#export-thinking-toggle');
@@ -398,29 +371,39 @@ function injectExportUI() {
 }
 
 function performExport(action) {
-    // Re-implemented to use async for everything
     const includeThinking = document.getElementById('export-thinking-toggle').checked;
 
-    // Config retrieval was duplicated, simplifying
+    // Show loading state could be nice here, but keeping it simple for now
+
     chrome.storage.sync.get(['notionKey', 'dbId'], (config) => {
         extractChatDataAsync({ includeThinking }).then(data => {
             if (action === 'notion') {
                 if (!config.notionKey || !config.dbId) {
-                    alert('请先在扩展设置中配置 Notion 凭据。');
+                    showModal('Configuration Required', 'Please configure your Notion API Key and Database ID in the extension settings first.', null, null);
                     return;
                 }
+
+                // Show "Processing" modal? Or just wait.
+                // Let's rely on final success/fail modal.
+
                 chrome.runtime.sendMessage({
                     action: "save_to_notion",
                     data: data,
                     config: { ...config, includeThinking }
                 }, (response) => {
                     if (response && response.success) {
-                        const goToPage = confirm('成功保存到 Notion！\n\n点击"确定"查看页面，点击"取消"关闭。');
-                        if (goToPage && response.pageUrl) {
-                            window.open(response.pageUrl, '_blank');
-                        }
+                        showModal(
+                            'Saved to Notion!',
+                            'Your chat has been successfully exported to your Notion database.',
+                            'View Page',
+                            response.pageUrl
+                        );
                     } else {
-                        alert('保存失败: ' + (response?.error || '未知错误'));
+                        showModal(
+                            'Export Failed',
+                            'Error: ' + (response?.error || 'Unknown error'),
+                            null, null
+                        );
                     }
                 });
             } else if (action === 'markdown') {
@@ -468,7 +451,7 @@ function downloadMarkdown(data) {
 function printToPDF(data) {
     const win = window.open('', '_blank');
     if (!win) {
-        alert('请允许弹出窗口以生成 PDF。');
+        showModal('Popups Blocked', 'Please allow popups to generate PDF.', null, null);
         return;
     }
     const html = `<!DOCTYPE html>
