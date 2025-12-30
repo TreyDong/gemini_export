@@ -323,6 +323,11 @@ function injectExportUI() {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                 <span>Print to PDF</span>
             </div>
+            <div class="menu-divider" style="height:1px; background:#e2e8f0; margin:8px 0;"></div>
+            <div class="menu-item" data-action="exportAll" style="color:#1a73e8; font-weight:500;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span>Export All Chats</span>
+            </div>
         </div>
         <button class="fab-btn">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -338,7 +343,7 @@ function injectExportUI() {
     // 3. Inject Modal
     const modalDiv = document.createElement('div');
     modalDiv.innerHTML = `
-        <div id="gemini-export-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:100000; justify-content:center; align-items:center;">
+        <div id="gemini-export-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:100002; justify-content:center; align-items:center;">
             <div style="background:white; padding:24px; border-radius:12px; max-width:400px; width:90%; box-shadow:0 10px 25px rgba(0,0,0,0.2); text-align:center; font-family: 'Google Sans', sans-serif;">
                 <h3 id="gemini-export-title" style="margin-top:0; margin-bottom:12px; color:#1f1f1f; font-size:18px;"></h3>
                 <p id="gemini-export-message" style="margin:0 0 20px 0; color:#555; font-size:14px; line-height:1.5;"></p>
@@ -424,6 +429,8 @@ function performExport(action) {
                 downloadMarkdown(data);
             } else if (action === 'pdf') {
                 printToPDF(data);
+            } else if (action === 'exportAll') {
+                startBatchExport(config, includeThinking);
             }
         });
     });
@@ -450,7 +457,7 @@ async function downloadMarkdown(data) {
         md += `---\n\n`;
     });
 
-    // 保留中文，只移除文件系统非法字符
+    // Keep unicode chars, only remove filesystem illegal characters
     const safeTitle = data.title
         .replace(/[\/\\:*?"<>|]/g, '_')
         .replace(/\s+/g, ' ')
@@ -458,7 +465,7 @@ async function downloadMarkdown(data) {
         .substring(0, 100);
     const filename = `Gemini-${safeTitle}.md`;
 
-    // 方法1: 使用现代 File System Access API（最可靠）
+    // Method 1: Use modern File System Access API (most reliable)
     if ('showSaveFilePicker' in window) {
         try {
             const handle = await window.showSaveFilePicker({
@@ -482,7 +489,7 @@ async function downloadMarkdown(data) {
         }
     }
 
-    // 方法2: 回退到传统anchor下载，使用File对象
+    // Method 2: Fallback to traditional anchor download with File object
     try {
         const file = new File([md], filename, { type: 'text/markdown;charset=utf-8' });
         const url = URL.createObjectURL(file);
@@ -492,12 +499,12 @@ async function downloadMarkdown(data) {
         a.style.display = 'none';
         document.body.appendChild(a);
 
-        // 使用requestAnimationFrame确保DOM更新
+        // Use requestAnimationFrame to ensure DOM update
         requestAnimationFrame(() => {
             a.click();
             console.log('✅ Download triggered via File object');
 
-            // 延迟清理
+            // Delayed cleanup
             setTimeout(() => {
                 if (document.body.contains(a)) {
                     document.body.removeChild(a);
@@ -560,6 +567,506 @@ function printToPDF(data) {
 function escapeHtml(text) {
     if (!text) return '';
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// --- Batch Export Functions ---
+
+// Inject batch export progress modal
+function injectBatchExportUI() {
+    if (document.getElementById('batch-export-modal')) return;
+
+    const modalHtml = `
+        <div id="batch-export-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:100001; justify-content:center; align-items:center; font-family:'Google Sans',sans-serif;">
+            <div style="background:white; padding:28px; border-radius:16px; max-width:500px; width:90%; max-height:80vh; box-shadow:0 20px 40px rgba(0,0,0,0.25); display:flex; flex-direction:column;">
+                <h3 id="batch-export-title" style="margin:0 0 16px 0; color:#1a1a1a; font-size:18px; display:flex; align-items:center; gap:10px;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Batch Export Chats
+                </h3>
+                
+                <!-- Selection View (shown first) -->
+                <div id="batch-selection-view">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                        <p style="color:#555; margin:0; font-size:14px;" id="batch-selection-count">Scanning chats...</p>
+                        <div style="display:flex; gap:8px;">
+                            <button id="batch-select-all" style="padding:4px 10px; border:1px solid #dadce0; background:white; color:#1a73e8; border-radius:4px; cursor:pointer; font-size:12px;">Select All</button>
+                            <button id="batch-select-none" style="padding:4px 10px; border:1px solid #dadce0; background:white; color:#666; border-radius:4px; cursor:pointer; font-size:12px;">Deselect All</button>
+                        </div>
+                    </div>
+                    <div id="batch-conversation-list" style="max-height:300px; overflow-y:auto; border:1px solid #e2e8f0; border-radius:8px; margin-bottom:16px;">
+                        <div style="padding:20px; text-align:center; color:#888;">Loading...</div>
+                    </div>
+                    <p style="color:#555; margin:0 0 12px 0; font-size:14px;">Select export format:</p>
+                    <div style="display:flex; gap:12px;">
+                        <button class="batch-format-btn" data-format="markdown" style="flex:1; padding:12px; border:2px solid #e2e8f0; border-radius:12px; background:white; cursor:pointer; transition:all 0.2s;">
+                            <div style="font-size:20px; margin-bottom:4px;">📝</div>
+                            <div style="font-weight:500; color:#333; font-size:13px;">Markdown ZIP</div>
+                        </button>
+                        <button class="batch-format-btn" data-format="notion" style="flex:1; padding:12px; border:2px solid #e2e8f0; border-radius:12px; background:white; cursor:pointer; transition:all 0.2s;">
+                            <div style="font-size:20px; margin-bottom:4px;">📓</div>
+                            <div style="font-weight:500; color:#333; font-size:13px;">Notion</div>
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Progress View (hidden initially) -->
+                <div id="batch-progress-view" style="display:none;">
+                    <div id="batch-progress-text" style="color:#555; font-size:14px; margin-bottom:12px;">Scanning chat list...</div>
+                    <div style="background:#e2e8f0; border-radius:8px; height:8px; overflow:hidden; margin-bottom:8px;">
+                        <div id="batch-progress-bar" style="background:linear-gradient(90deg, #4285f4, #1a73e8); height:100%; width:0%; transition:width 0.3s ease;"></div>
+                    </div>
+                    <div id="batch-progress-detail" style="font-size:12px; color:#888;"></div>
+                </div>
+                
+                <!-- Result View (hidden initially) -->
+                <div id="batch-result-view" style="display:none;">
+                    <div id="batch-result-text" style="color:#333; font-size:14px; line-height:1.6;"></div>
+                </div>
+                
+                <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:20px;">
+                    <button id="batch-cancel-btn" style="padding:10px 20px; border:1px solid #dadce0; background:white; color:#3c4043; border-radius:8px; cursor:pointer; font-weight:500;">Cancel</button>
+                    <button id="batch-close-btn" style="display:none; padding:10px 20px; border:none; background:#1a73e8; color:white; border-radius:8px; cursor:pointer; font-weight:500;">Done</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const div = document.createElement('div');
+    div.innerHTML = modalHtml;
+    document.body.appendChild(div.firstElementChild);
+
+    // Add hover effect for format buttons and checkbox styles
+    const style = document.createElement('style');
+    style.textContent = `
+        .batch-format-btn:hover { border-color:#1a73e8 !important; background:#f8fafc !important; }
+        .batch-format-btn.selected { border-color:#1a73e8 !important; background:#e8f0fe !important; }
+        .batch-conv-item { display:flex; align-items:center; padding:10px 12px; border-bottom:1px solid #f0f0f0; cursor:pointer; transition:background 0.15s; }
+        .batch-conv-item:hover { background:#f8fafc; }
+        .batch-conv-item:last-child { border-bottom:none; }
+        .batch-conv-checkbox { width:18px; height:18px; margin-right:10px; accent-color:#1a73e8; cursor:pointer; }
+        .batch-conv-title { flex:1; font-size:13px; color:#333; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    `;
+    document.head.appendChild(style);
+}
+
+// Scan sidebar for all conversation links
+async function scanAllConversations() {
+    const conversations = [];
+
+    // First, check if sidebar is expanded - if not, expand it
+    let convElements = document.querySelectorAll('div.conversation');
+
+    if (convElements.length === 0) {
+        // Sidebar might be collapsed, try to expand it
+        const menuBtn = document.querySelector('button[aria-label="Main menu"], button[aria-label="主菜单"]');
+        if (menuBtn) {
+            menuBtn.click();
+            // Wait for sidebar to expand
+            await new Promise(r => setTimeout(r, 800));
+            convElements = document.querySelectorAll('div.conversation');
+        }
+    }
+
+    // Still no conversations? Try alternative selectors
+    if (convElements.length === 0) {
+        convElements = document.querySelectorAll('[data-test-id="conversation"], .conversation-item');
+    }
+
+    // Auto-scroll sidebar to load all conversations
+    // Find the sidebar scroller (the one containing conversations, not the chat history)
+    const allScrollers = Array.from(document.querySelectorAll('infinite-scroller'));
+    const scrollContainer = allScrollers.find(s => s.querySelector('.conversation')) ||
+        document.querySelector('infinite-scroller:not(.chat-history)') ||
+        document.querySelector('.conversations-container');
+
+    if (scrollContainer && convElements.length > 0) {
+        let previousCount = 0;
+        let currentCount = convElements.length;
+        let stableCount = 0; // Count how many times the count stayed the same
+        const maxScrollAttempts = 30;
+        let scrollAttempts = 0;
+
+        while (stableCount < 3 && scrollAttempts < maxScrollAttempts) {
+            previousCount = currentCount;
+
+            // Aggressive scroll pattern: scroll down, jog up, scroll down again
+            scrollContainer.scrollTop = scrollContainer.scrollHeight;
+            await new Promise(r => setTimeout(r, 300));
+
+            // Small jog up to trigger loading observers
+            scrollContainer.scrollTop -= 50;
+            await new Promise(r => setTimeout(r, 200));
+
+            // Back to bottom
+            scrollContainer.scrollTop = scrollContainer.scrollHeight;
+            await new Promise(r => setTimeout(r, 800));
+
+            // Get updated count
+            convElements = document.querySelectorAll('div.conversation');
+            currentCount = convElements.length;
+            scrollAttempts++;
+
+            if (currentCount === previousCount) {
+                stableCount++;
+            } else {
+                stableCount = 0; // Reset if count changed
+            }
+        }
+
+        // Scroll back to top
+        scrollContainer.scrollTop = 0;
+        await new Promise(r => setTimeout(r, 300));
+
+        // Re-query all elements after scrolling
+        convElements = document.querySelectorAll('div.conversation');
+    }
+
+    for (const conv of convElements) {
+        try {
+            // Get title from conversation-title element
+            const titleEl = conv.querySelector('.conversation-title, .title');
+            let title = titleEl?.innerText?.trim() || conv.innerText?.split('\n')[0]?.trim() || 'Untitled';
+            title = title.substring(0, 100);
+
+            // Extract conversation ID from jslog attribute
+            // Format: ["c_xxxxx", null, 0] where xxxxx is the ID
+            let id = null;
+            const jslog = conv.getAttribute('jslog');
+            if (jslog) {
+                const match = jslog.match(/\["c_([a-f0-9]+)"/i);
+                if (match) {
+                    id = match[1];
+                }
+            }
+
+            // Fallback: try to get from data attributes or other sources
+            if (!id) {
+                id = conv.getAttribute('data-conversation-id') ||
+                    conv.getAttribute('data-id') ||
+                    `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            }
+
+            const url = `https://gemini.google.com/app/${id}`;
+
+            // Avoid duplicates
+            if (!conversations.find(c => c.id === id)) {
+                conversations.push({ id, title, url, element: conv });
+            }
+        } catch (e) {
+            console.warn('Error parsing conversation:', e);
+        }
+    }
+
+    return conversations;
+}
+
+// Generate Markdown content from chat data
+function generateMarkdownFromData(data) {
+    const dateObj = new Date(data.date);
+    const dateStr = dateObj.toLocaleDateString() + ' ' + dateObj.toLocaleTimeString();
+
+    let md = `# ${data.title}\n\n`;
+    md += `**Exported:** ${dateStr}\n\n`;
+    md += `**Link:** ${data.url}\n\n`;
+
+    data.messages.forEach(msg => {
+        if (msg.role === 'user') {
+            md += `## Prompt\n\n${msg.content}\n\n`;
+        } else {
+            md += `## Gemini\n\n`;
+            if (msg.thinking) {
+                md += `<details>\n<summary>Thinking</summary>\n\n${msg.thinking}\n\n</details>\n\n`;
+            }
+            md += `${msg.content}\n\n`;
+        }
+        md += `---\n\n`;
+    });
+
+    return md;
+}
+
+// Create ZIP and download in page context (with DOM APIs available)
+async function createAndDownloadZip(files) {
+    const zip = new JSZip();
+    const dateStr = new Date().toISOString().split('T')[0];
+
+    files.forEach((file, index) => {
+        const safeTitle = file.title
+            .replace(/[\/\\:*?"<>|]/g, '_')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .substring(0, 80);
+
+        const filename = `${String(index + 1).padStart(3, '0')}-Gemini-${safeTitle}.md`;
+        zip.file(filename, file.content);
+    });
+
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const zipFilename = `Gemini-Export-${dateStr}.zip`;
+
+    // Try modern File System Access API first
+    if ('showSaveFilePicker' in window) {
+        try {
+            const handle = await window.showSaveFilePicker({
+                suggestedName: zipFilename,
+                types: [{
+                    description: 'ZIP Archive',
+                    accept: { 'application/zip': ['.zip'] }
+                }]
+            });
+            const writable = await handle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            console.log('✅ ZIP saved via File System Access API');
+            return;
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                throw new Error('User cancelled save');
+            }
+            console.warn('File System Access API failed, trying fallback:', e);
+        }
+    }
+
+    // Fallback: use anchor download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = zipFilename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+
+    requestAnimationFrame(() => {
+        a.click();
+        setTimeout(() => {
+            if (document.body.contains(a)) {
+                document.body.removeChild(a);
+            }
+            URL.revokeObjectURL(url);
+        }, 1000);
+    });
+}
+
+// Start batch export process
+async function startBatchExport(config, includeThinking) {
+    injectBatchExportUI();
+
+    const modal = document.getElementById('batch-export-modal');
+    const selectionView = document.getElementById('batch-selection-view');
+    const progressView = document.getElementById('batch-progress-view');
+    const resultView = document.getElementById('batch-result-view');
+    const cancelBtn = document.getElementById('batch-cancel-btn');
+    const closeBtn = document.getElementById('batch-close-btn');
+    const convList = document.getElementById('batch-conversation-list');
+    const selectionCount = document.getElementById('batch-selection-count');
+    const selectAllBtn = document.getElementById('batch-select-all');
+    const selectNoneBtn = document.getElementById('batch-select-none');
+
+    let cancelled = false;
+    let allConversations = [];
+
+    // Reset UI
+    selectionView.style.display = 'block';
+    progressView.style.display = 'none';
+    resultView.style.display = 'none';
+    cancelBtn.style.display = 'block';
+    cancelBtn.textContent = 'Cancel';
+    closeBtn.style.display = 'none';
+    convList.innerHTML = '<div style="padding:20px; text-align:center; color:#888;">Scanning chat list...</div>';
+    modal.style.display = 'flex';
+
+    // Scan conversations first
+    allConversations = await scanAllConversations();
+
+    if (allConversations.length === 0) {
+        convList.innerHTML = '<div style="padding:20px; text-align:center; color:#ef4444;">No chats found. Please ensure the sidebar is expanded.</div>';
+        selectionCount.textContent = 'No chats found';
+        return;
+    }
+
+    // Render conversation list with checkboxes
+    function renderConversationList() {
+        convList.innerHTML = allConversations.map((conv, index) => `
+            <label class="batch-conv-item">
+                <input type="checkbox" class="batch-conv-checkbox" data-index="${index}" checked>
+                <span class="batch-conv-title">${escapeHtml(conv.title)}</span>
+            </label>
+        `).join('');
+        updateSelectionCount();
+    }
+
+    function updateSelectionCount() {
+        const checked = convList.querySelectorAll('.batch-conv-checkbox:checked').length;
+        selectionCount.textContent = `Selected ${checked} / ${allConversations.length} chats`;
+    }
+
+    function getSelectedConversations() {
+        const selected = [];
+        convList.querySelectorAll('.batch-conv-checkbox:checked').forEach(cb => {
+            const index = parseInt(cb.dataset.index);
+            selected.push(allConversations[index]);
+        });
+        return selected;
+    }
+
+    renderConversationList();
+
+    // Selection event handlers
+    convList.addEventListener('change', updateSelectionCount);
+
+    selectAllBtn.onclick = () => {
+        convList.querySelectorAll('.batch-conv-checkbox').forEach(cb => cb.checked = true);
+        updateSelectionCount();
+    };
+
+    selectNoneBtn.onclick = () => {
+        convList.querySelectorAll('.batch-conv-checkbox').forEach(cb => cb.checked = false);
+        updateSelectionCount();
+    };
+
+    // Format selection handlers
+    const formatBtns = modal.querySelectorAll('.batch-format-btn');
+    formatBtns.forEach(btn => {
+        btn.onclick = () => {
+            const format = btn.dataset.format;
+            const selectedConvs = getSelectedConversations();
+
+            if (selectedConvs.length === 0) {
+                showModal('Notice', 'Please select at least one chat to export.', null, null);
+                return;
+            }
+
+            // Check Notion config
+            if (format === 'notion' && (!config.notionKey || !config.dbId)) {
+                modal.style.display = 'none';
+                showModal('Configuration Required', 'Please configure your Notion API Key and Database ID in the extension settings first.', null, null);
+                return;
+            }
+
+            formatBtns.forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+
+            // Start export with selected conversations
+            startExportProcess(format, selectedConvs);
+        };
+    });
+
+    cancelBtn.onclick = () => {
+        cancelled = true;
+        modal.style.display = 'none';
+    };
+
+    closeBtn.onclick = () => {
+        modal.style.display = 'none';
+    };
+
+    async function startExportProcess(format, conversations) {
+        selectionView.style.display = 'none';
+        progressView.style.display = 'block';
+
+        const progressText = document.getElementById('batch-progress-text');
+        const progressBar = document.getElementById('batch-progress-bar');
+        const progressDetail = document.getElementById('batch-progress-detail');
+
+        progressText.textContent = `Exporting ${conversations.length} chats...`;
+        progressBar.style.width = '0%';
+
+        const results = [];
+        const exportedData = [];
+
+        for (let i = 0; i < conversations.length; i++) {
+            if (cancelled) break;
+
+            const conv = conversations[i];
+            const progress = ((i + 1) / conversations.length * 100).toFixed(0);
+
+            progressBar.style.width = `${progress}%`;
+            progressText.textContent = `Exporting ${i + 1}/${conversations.length}`;
+            progressDetail.textContent = conv.title;
+
+            try {
+                // Click on the conversation element to navigate (SPA style, no page refresh)
+                if (conv.element) {
+                    conv.element.click();
+
+                    // Wait for content to load
+                    await new Promise(r => setTimeout(r, 1500));
+
+                    // Extract data from the current page
+                    const chatData = await extractChatDataAsync({ includeThinking: config.includeThinking });
+
+                    if (format === 'notion') {
+                        // Send to background for Notion save
+                        const result = await new Promise((resolve) => {
+                            chrome.runtime.sendMessage({
+                                action: 'save_to_notion',
+                                data: chatData,
+                                config: config
+                            }, resolve);
+                        });
+
+                        if (result && result.success) {
+                            results.push({ ...conv, success: true });
+                        } else {
+                            results.push({ ...conv, success: false, error: result?.error || 'Notion save failed' });
+                        }
+                    } else if (format === 'markdown') {
+                        // Collect markdown data
+                        const markdown = generateMarkdownFromData(chatData);
+                        results.push({ ...conv, success: true });
+                        exportedData.push({
+                            title: chatData.title || conv.title,
+                            content: markdown
+                        });
+                    }
+                } else {
+                    results.push({ ...conv, success: false, error: 'Element not found' });
+                }
+            } catch (e) {
+                console.error('Export error for', conv.title, e);
+                results.push({ ...conv, success: false, error: e.message });
+            }
+
+            // Small delay between exports
+            await new Promise(r => setTimeout(r, 300));
+        }
+
+        // Show results
+        progressView.style.display = 'none';
+        resultView.style.display = 'block';
+        cancelBtn.style.display = 'none';
+        closeBtn.style.display = 'block';
+
+        const successCount = results.filter(r => r.success).length;
+        const failCount = results.filter(r => !r.success).length;
+
+        let resultHtml = `<div style="color:#22c55e; font-weight:500; margin-bottom:8px;">✅ Success: ${successCount} chats</div>`;
+        if (failCount > 0) {
+            resultHtml += `<div style="color:#ef4444; margin-bottom:8px;">❌ Failed: ${failCount} chats</div>`;
+        }
+
+        if (format === 'markdown' && exportedData.length > 0) {
+            resultHtml += `<div style="margin-top:12px; padding:12px; background:#f0fdf4; border-radius:8px; font-size:13px;">
+                Generating ZIP file...
+            </div>`;
+
+            document.getElementById('batch-result-text').innerHTML = resultHtml;
+
+            // Create ZIP locally (JSZip loaded as content script)
+            try {
+                await createAndDownloadZip(exportedData);
+                document.getElementById('batch-result-text').innerHTML = resultHtml.replace(
+                    'Generating ZIP file...',
+                    '✅ ZIP file saved'
+                );
+            } catch (e) {
+                document.getElementById('batch-result-text').innerHTML = resultHtml.replace(
+                    'Generating ZIP file...',
+                    '❌ ZIP generation failed: ' + e.message
+                );
+            }
+        } else {
+            document.getElementById('batch-result-text').innerHTML = resultHtml;
+        }
+    }
 }
 
 if (document.readyState === 'loading') {

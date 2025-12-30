@@ -1,9 +1,26 @@
+// Import JSZip for ZIP file creation
+importScripts('lib/jszip.min.js');
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "save_to_notion") {
         saveToNotion(request.data, request.config)
             .then((pageUrl) => sendResponse({ success: true, pageUrl: pageUrl }))
             .catch(err => sendResponse({ success: false, error: err.toString() }));
         return true; // async response
+    }
+
+    if (request.action === "batch_export_single") {
+        handleBatchExportSingle(request.conversation, request.format, request.config, sender.tab?.id)
+            .then(result => sendResponse(result))
+            .catch(err => sendResponse({ success: false, error: err.toString() }));
+        return true;
+    }
+
+    if (request.action === "create_zip_download") {
+        createZipAndDownload(request.files)
+            .then(() => sendResponse({ success: true }))
+            .catch(err => sendResponse({ success: false, error: err.toString() }));
+        return true;
     }
 });
 
@@ -518,4 +535,204 @@ function convertMessagesToBlocks(messages) {
     });
 
     return blocks;
+}
+
+// --- Batch Export Functions ---
+
+/**
+ * Handle exporting a single conversation for batch export
+ * Navigates to the conversation URL, extracts data, and returns it
+ */
+async function handleBatchExportSingle(conversation, format, config, sourceTabId) {
+    try {
+        // We need to navigate to the conversation and extract data
+        // Update the current tab to the conversation URL
+        await chrome.tabs.update(sourceTabId, { url: conversation.url });
+
+        // Wait for the page to load
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Inject content script and extract data
+        const result = await chrome.scripting.executeScript({
+            target: { tabId: sourceTabId },
+            func: extractChatDataFromPage,
+            args: [config.includeThinking]
+        });
+
+        if (!result || !result[0] || !result[0].result) {
+            return { success: false, error: 'Failed to extract chat data' };
+        }
+
+        const chatData = result[0].result;
+
+        if (format === 'notion') {
+            // Save to Notion
+            const pageUrl = await saveToNotion(chatData, config);
+            return { success: true, pageUrl };
+        } else if (format === 'markdown') {
+            // Generate markdown content and return it
+            const markdown = generateMarkdownContent(chatData);
+            return { success: true, data: markdown };
+        }
+
+        return { success: false, error: 'Unknown format' };
+    } catch (e) {
+        console.error('Batch export error:', e);
+        return { success: false, error: e.message };
+    }
+}
+
+/**
+ * Function to be injected into page to extract chat data
+ */
+function extractChatDataFromPage(includeThinking) {
+    // Re-implement extraction logic that runs in page context
+    function domToMarkdownSimple(node) {
+        if (!node) return '';
+        if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+        const tagName = node.tagName.toLowerCase();
+        const style = window.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') return '';
+        if (['script', 'style', 'noscript'].includes(tagName)) return '';
+
+        if (tagName === 'pre') {
+            const codeEl = node.querySelector('code');
+            const lang = codeEl ? (codeEl.className.match(/language-(\w+)/) || [])[1] || '' : '';
+            const codeText = codeEl ? codeEl.innerText : node.innerText;
+            return `\n\`\`\`${lang}\n${codeText}\n\`\`\`\n`;
+        }
+
+        let inner = '';
+        for (const child of node.childNodes) {
+            inner += domToMarkdownSimple(child);
+        }
+
+        switch (tagName) {
+            case 'p': return `\n${inner.trim()}\n\n`;
+            case 'br': return '  \n';
+            case 'strong': case 'b': return `**${inner}**`;
+            case 'em': case 'i': return `*${inner}*`;
+            case 'h1': return `\n# ${inner}\n`;
+            case 'h2': return `\n## ${inner}\n`;
+            case 'h3': return `\n### ${inner}\n`;
+            case 'ul': case 'ol': return `\n${inner}\n`;
+            case 'li': return `- ${inner.trim()}\n`;
+            case 'a': return `[${inner}](${node.getAttribute('href')})`;
+            case 'code': return node.closest('pre') ? inner : `\`${inner}\``;
+            default: return inner;
+        }
+    }
+
+    let title = document.title;
+    const sidebarSelected = document.querySelector('.conversation-title, .mat-mdc-list-item.selected .mdc-list-item__primary-text');
+    if (sidebarSelected?.innerText) title = sidebarSelected.innerText;
+    title = title.replace(/ - Google$/, '').replace(/^Gemini$/, 'Gemini Chat').trim() || 'Gemini Chat Export';
+
+    const messages = [];
+    const allElements = document.querySelectorAll('user-query, model-response');
+
+    for (const el of allElements) {
+        let role = '';
+        let content = '';
+        let thinking = '';
+
+        if (el.tagName.toLowerCase() === 'user-query') {
+            role = 'user';
+            const contentEl = el.querySelector('.query-content') || el.querySelector('div[class*="content"]');
+            content = contentEl ? domToMarkdownSimple(contentEl) : el.innerText;
+        } else if (el.tagName.toLowerCase() === 'model-response') {
+            role = 'model';
+
+            if (includeThinking) {
+                const modelThoughts = el.querySelector('model-thoughts, [data-test-id="model-thoughts"], thought-view');
+                if (modelThoughts) {
+                    const markdowns = modelThoughts.querySelectorAll('.markdown');
+                    if (markdowns.length > 0) {
+                        thinking = Array.from(markdowns).map(md => domToMarkdownSimple(md).trim()).join('\n\n');
+                    }
+                }
+            }
+
+            const allMarkdowns = Array.from(el.querySelectorAll('.markdown'));
+            const contentMarkdowns = allMarkdowns.filter(md =>
+                !md.closest('model-thoughts, [data-test-id="model-thoughts"], thought-view')
+            );
+            content = contentMarkdowns.length > 0
+                ? contentMarkdowns.map(md => domToMarkdownSimple(md)).join('\n\n')
+                : el.innerText;
+        }
+
+        if (content.trim() || thinking.trim()) {
+            messages.push({ role, content: content.trim(), thinking: thinking.trim() });
+        }
+    }
+
+    return {
+        title,
+        messages,
+        url: window.location.href,
+        date: new Date().toISOString()
+    };
+}
+
+/**
+ * Generate markdown content from chat data
+ */
+function generateMarkdownContent(data) {
+    const dateObj = new Date(data.date);
+    const dateStr = dateObj.toLocaleDateString() + ' ' + dateObj.toLocaleTimeString();
+
+    let md = `# ${data.title}\n\n`;
+    md += `**Exported:** ${dateStr}\n\n`;
+    md += `**Link:** ${data.url}\n\n`;
+
+    data.messages.forEach(msg => {
+        if (msg.role === 'user') {
+            md += `## Prompt\n\n${msg.content}\n\n`;
+        } else {
+            md += `## Gemini\n\n`;
+            if (msg.thinking) {
+                md += `<details>\n<summary>Thinking</summary>\n\n${msg.thinking}\n\n</details>\n\n`;
+            }
+            md += `${msg.content}\n\n`;
+        }
+        md += `---\n\n`;
+    });
+
+    return md;
+}
+
+/**
+ * Create ZIP file from exported markdown files and trigger download
+ */
+async function createZipAndDownload(files) {
+    const zip = new JSZip();
+
+    const dateStr = new Date().toISOString().split('T')[0];
+
+    files.forEach((file, index) => {
+        // Create safe filename
+        const safeTitle = file.title
+            .replace(/[\/\\:*?"<>|]/g, '_')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .substring(0, 80);
+
+        const filename = `${String(index + 1).padStart(3, '0')}-Gemini-${safeTitle}.md`;
+        zip.file(filename, file.content);
+    });
+
+    // Generate ZIP as base64 (service workers don't support URL.createObjectURL)
+    const base64 = await zip.generateAsync({ type: 'base64' });
+    const dataUrl = 'data:application/zip;base64,' + base64;
+    const zipFilename = `Gemini-Export-${dateStr}.zip`;
+
+    // Trigger download
+    await chrome.downloads.download({
+        url: dataUrl,
+        filename: zipFilename,
+        saveAs: true
+    });
 }
