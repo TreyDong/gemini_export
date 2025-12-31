@@ -1,10 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Gemini to Notion Exporter",
-  "version": "1.1",
+  "version": "1.5",
   "description": "Export Gemini chat history to Notion",
   "permissions": [
-    "activeTab",
     "storage",
     "downloads"
   ],
@@ -29,7 +28,6 @@
         "https://gemini.google.com/*"
       ],
       "js": [
-        "lib/html2pdf.bundle.min.js",
         "lib/jszip.min.js",
         "content.js"
       ]
